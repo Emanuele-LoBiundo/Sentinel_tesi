@@ -1,0 +1,112 @@
+library(plyr)
+library(dplyr)
+tst2 <- read.csv("/application/pi/Desktop/Sentinel1Ultimo/BackscatterVVsmooth30Ok.csv",row.name = 1, header = 1, check.names=FALSE, sep = ";",  dec = ",")
+sc<-tst2[,2:length(tst2)]
+#colnames(sc) <- strptime(as.character(colnames(sc)), "%d/%m/%Y")
+colnames(sc) <- strptime(as.character(colnames(sc)), "D%Y%m%d")
+
+##################################FUNZIONE CLUSTERING IN BLOCCHI###########################################
+cluster1 <- NULL
+SecondCluster <- NULL
+mergeDatabase = NULL
+a<- NULL
+b <- NULL
+
+new.function <- function(Database, blocksize) {
+  s <-rep(seq(-1, nrow(Database), by = blocksize))
+  if (nrow(Database) > max(s)) {
+    s <- c(s, nrow(Database)-1)
+  }
+  for (i in 2:length(s)-1){
+    a <- s[i]+1
+    b <- s[i+1]
+    if (b == nrow(Database)-1){
+      b <- nrow(Database)
+    }
+    Sample <- Database[a:b,]
+    hc4 <- hclust(dist(Sample), method = "average")
+    cluster1 <- cutree(hc4, h = 3.7)
+    if (i > 1){
+      cluster1 <- cluster1 + max(mergeDatabase["cluster1"]) 
+    }
+    SecondCluster <- cbind(Sample,cluster1)
+    mergeDatabase = rbind(mergeDatabase, SecondCluster)
+  }
+  return(mergeDatabase) 
+}
+
+Clustering_primo <- new.function(sc,37500)
+
+##################################SECONDO CLUSTERING###########################################
+#CALCOLO CENTROIDI 
+library(dplyr)
+centroids <- Clustering_primo %>%
+  group_by(cluster1) %>%
+  summarise_all(list(mean))
+
+#Clustering centroidi
+hccentroid <- hclust(dist(centroids[, -1]), method = "average")
+
+#DATAFRAME CENTROIDI E CLUSTER PRIMO E SECONDO
+sc <- cbind.data.frame(centroids, cluster2=cutree(hccentroid, h = 3.7))
+
+
+formerge <- dplyr::select(sc, cluster1, cluster2)
+secondo_livello <- plyr::join(Clustering_primo, formerge, by = "cluster1")
+row.names(secondo_livello) <- row.names(Clustering_primo)
+sec_lev <- cbind.data.frame(tst2[1], secondo_livello)
+sec_lev$id <- row.names(sec_lev)
+
+library(dplyr)
+centroids2 <- secondo_livello%>%
+  group_by(cluster2) %>%
+  select(-cluster1) %>%
+  summarise_all(list(mean))
+
+write.table(as.matrix(plyr::count(sec_lev["cluster2"])),'/application/pi/Desktop/Sentinel1Ultimo/VV/DoppioClusteringS1frequenzaVV.csv', sep = ";",dec = ",")
+write.table(centroids,'/application/pi/Desktop/Sentinel1Ultimo/VV/CentroidiPrimoLivelloVV.csv', sep = ";",dec = ",")
+write.table(centroids2,'/application/pi/Desktop/Sentinel1Ultimo/VV/CentroidiSecondoLivelloVV.csv', sep = ";",dec = ",")
+
+
+###############################DISTANZA DAL CENTROIDE###################################
+lista <- centroids2$cluster2
+database <- NULL
+matrice <- NULL
+for(i in lista){
+  provaClus1cent <- centroids2%>% filter(cluster2 == i) %>% select(-c(cluster1,cluster2)) 
+  provaClus1dat <- secondo_livello[secondo_livello$cluster2 == i,] %>% select(-c(cluster1,cluster2))
+  dists <- apply(provaClus1dat, 1, function(x) {
+    a <- rbind(x,provaClus1cent)
+    dista <- as.matrix(dist(a))
+    filt <- dista[2,1]
+    rbind(matrice, filt)
+  })
+  database <- rbind(database,as.matrix(dists))
+  i + 1
+}
+
+database2 <- as.data.frame(database)
+database2$id <- row.names(database2)
+unione <- plyr::join(sec_lev, database2, by= "id")
+unione <- unione %>% mutate(Dist_cluster = V1) 
+unione <- unione %>% select(-c(V1,id) )
+
+library(dplyr)
+unione <- unione %>%
+  group_by(DE_VARIETA,cluster2) %>%
+  add_count %>%
+  mutate(Conta_varieta = n()) %>%
+  select(-n)
+
+
+unione <- unione %>%
+  group_by(cluster2) %>%
+  add_count %>%
+  mutate(Conta_part = n()) %>%
+  select(-n)
+
+unione$Percentage <- (unione$Conta_varieta*100)/(unione$Conta_part)
+row.names(unione) <- row.names(sec_lev)
+
+write.table(unione,'/application/pi/Desktop/Sentinel1Ultimo/VV/DatabaseCompletoConDistanzePrioritàVV.csv', sep = ";",dec = ",")
+
